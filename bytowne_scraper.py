@@ -3,72 +3,92 @@ from bs4 import BeautifulSoup
 from ics import Calendar, Event
 from dateutil import parser
 from datetime import datetime, timedelta
+import re
 
-# ByTowne's direct ticketing schedule endpoint
+# Agile Ticketing direct list endpoint for ByTowne Cinema
 SCHEDULE_URL = "https://tickets.bytowne.ca/websales/pages/list.aspx?epguid=3e656b43-cd16-45ba-86a1-d2392fd70869&"
 
 def parse_bytowne():
     headers = {
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
     
+    print(f"Fetching showtimes from {SCHEDULE_URL}...")
     response = requests.get(SCHEDULE_URL, headers=headers)
+    
+    if response.status_code != 200:
+        print(f"Failed to load page, HTTP status: {response.status_code}")
+        return
+
     soup = BeautifulSoup(response.text, "html.parser")
-    
     cal = Calendar()
-    
-    # ByTowne structures their online schedule as a calendar grid or item list
-    # Look for table/container cells containing days and film links
-    day_cells = soup.find_all(["td", "div"], class_=lambda c: c and ("Day" in c or "Calendar" in c or "Date" in c))
-    
-    # Fallback to general link parsing if class structure shifts slightly
-    # The site uses structured elements with film names and time strings (e.g., "7:00 PM")
-    film_entries = soup.find_all("a", href=lambda h: h and "details.aspx" in h)
-    
     current_year = datetime.now().year
+    
+    # Extract page text line by line to reliably capture Date -> Film -> Time streams
+    text_content = soup.get_text(separator="\n")
+    lines = [line.strip() for line in text_content.split("\n") if line.strip()]
+    
+    current_date_str = None
+    event_count = 0
 
-    for entry in film_entries:
-        # Get film title
-        title = entry.get_text(strip=True)
-        if not title or title.lower() == "more":
-            continue
-            
-        # The parent or sibling elements contain the date & time strings
-        parent = entry.parent
-        time_text = parent.get_text(" ", strip=True)
+    # Match dates like "Friday Jul 24th", "Saturday Jul 25th", "Sunday Aug 2nd"
+    date_pattern = re.compile(r'^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+([A-Za-z]{3})\s+(\d{1,2})(?:st|nd|rd|th)?', re.IGNORECASE)
+    
+    # Match showtimes like "7:00 PM", "12:45 PM", "9:30 PM"
+    time_pattern = re.compile(r'^(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm))$')
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
         
-        # Example extracted string: "Friday Jul 3rd Couture 4:00 PM"
-        # We parse out the time string (e.g. "4:00 PM") and date context
-        try:
-            # Locate time patterns like "7:00 PM" or "1:30 PM"
-            import re
-            time_match = re.search(r'(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm))', time_text)
-            date_match = re.search(r'([A-Za-z]+\s+[A-Za-z]+\s+\d{1,2}(?:st|nd|rd|th)?)', time_text)
-            
-            if time_match and date_match:
-                raw_date = date_match.group(1)
-                raw_time = time_match.group(1)
-                
-                # Combine into ISO format
-                full_datetime_str = f"{raw_date} {current_year} {raw_time}"
-                start_dt = parser.parse(full_datetime_str)
-                
-                # Assume standard film duration ~ 2 hours
-                end_dt = start_dt + timedelta(hours=2)
-
-                event = Event()
-                event.name = f"🎬 {title}"
-                event.begin = start_dt
-                event.end = end_dt
-                event.location = "ByTowne Cinema, 325 Rideau St, Ottawa, ON K1N 5Y4"
-                event.description = "ByTowne Cinema Screening"
-                
-                cal.events.add(event)
-        except Exception:
+        # Check if this line is a Date Header
+        date_match = date_pattern.match(line)
+        if date_match:
+            # Reconstruct clean date string e.g. "Jul 24 2026"
+            month = date_match.group(2)
+            day = date_match.group(3)
+            current_date_str = f"{month} {day} {current_year}"
+            i += 1
             continue
 
-    # Export to .ics format
-    with open("bytowne.ics", "w") as f:
+        # If we have an active date context, look for Film Title + Showtime pairs
+        if current_date_str and i + 1 < len(lines):
+            possible_title = line
+            possible_time = lines[i + 1]
+
+            time_match = time_pattern.match(possible_time)
+            if time_match:
+                # Ignore non-film UI text
+                if possible_title not in ["More", "Buy Tickets", "Sign In", "Cart"]:
+                    raw_time = time_match.group(1)
+                    full_datetime_str = f"{current_date_str} {raw_time}"
+                    
+                    try:
+                        start_dt = parser.parse(full_datetime_str)
+                        end_dt = start_dt + timedelta(hours=2) # Estimate 2 hr runtime
+
+                        event = Event()
+                        event.name = f"🎬 {possible_title}"
+                        event.begin = start_dt
+                        event.end = end_dt
+                        event.location = "ByTowne Cinema, 325 Rideau St, Ottawa, ON K1N 5Y4"
+                        event.description = "ByTowne Cinema Screening"
+                        
+                        cal.events.add(event)
+                        event_count += 1
+                        print(f"Added: {possible_title} on {full_datetime_str}")
+                    except Exception as e:
+                        print(f"Error parsing date '{full_datetime_str}': {e}")
+                
+                i += 2
+                continue
+
+        i += 1
+
+    print(f"\nTotal events added to calendar: {event_count}")
+
+    # Write output to bytowne.ics
+    with open("bytowne.ics", "w", encoding="utf-8") as f:
         f.writelines(cal.serialize_iter())
 
 if __name__ == "__main__":
