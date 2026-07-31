@@ -1,8 +1,10 @@
 import requests
 from ics import Calendar, Event
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 FEED_URL = "https://tickets.bytowne.ca/websales/feed.ashx?guid=3e656b43-cd16-45ba-86a1-d2392fd70869&format=json&showslist=true&"
+LOCAL_TZ = ZoneInfo("America/Toronto")
 
 def fetch_and_build_ics():
     headers = {
@@ -14,9 +16,6 @@ def fetch_and_build_ics():
     response.raise_for_status()
 
     data = response.json()
-
-    # Dig into Agile Ticketing's actual structure:
-    # Root -> "ArrayOfShows" -> [ Show Objects ] -> "CurrentShowings" -> [ Showing Objects ]
     shows = data.get("ArrayOfShows", [])
     
     cal = Calendar()
@@ -26,12 +25,9 @@ def fetch_and_build_ics():
         if not isinstance(show, dict):
             continue
 
-        # Parent show metadata
         show_title = show.get("Name", "ByTowne Movie")
         show_description = show.get("ShortDescription", "").strip()
         info_link = show.get("InfoLink", "")
-
-        # Extract individual showings
         showings = show.get("CurrentShowings", [])
 
         for showing in showings:
@@ -39,23 +35,24 @@ def fetch_and_build_ics():
                 continue
 
             start_str = showing.get("StartDate")
-            
-            # Skip missing start times or TBD dates
             if not start_str or showing.get("DateTBD"):
                 continue
 
             try:
-                start_dt = datetime.fromisoformat(start_str.rstrip("Z"))
+                # Parse naive datetime and attach local timezone explicitly
+                naive_start = datetime.fromisoformat(start_str)
+                start_dt = naive_start.replace(tzinfo=LOCAL_TZ)
             except ValueError:
                 continue
 
-            # Handle EndDate or default to duration / 2 hours
+            # Handle EndDate or Duration
             end_str = showing.get("EndDate")
             duration_mins = showing.get("Duration")
 
             if end_str:
                 try:
-                    end_dt = datetime.fromisoformat(end_str.rstrip("Z"))
+                    naive_end = datetime.fromisoformat(end_str)
+                    end_dt = naive_end.replace(tzinfo=LOCAL_TZ)
                 except ValueError:
                     end_dt = start_dt + timedelta(hours=2)
             elif duration_mins and duration_mins.isdigit():
@@ -63,7 +60,7 @@ def fetch_and_build_ics():
             else:
                 end_dt = start_dt + timedelta(hours=2)
 
-            # Build location from showing's nested Venue object
+            # Build location
             venue = showing.get("Venue", {})
             venue_name = venue.get("Name", "ByTowne Cinema")
             address = venue.get("Address1", "325 Rideau Street")
@@ -72,16 +69,13 @@ def fetch_and_build_ics():
             zip_code = venue.get("Zip", "K1N 5Y4")
             full_location = f"{venue_name}, {address}, {city}, {state} {zip_code}"
 
-            # Links (Purchase link is inside LegacyPurchaseLink on the showing)
             buy_link = showing.get("LegacyPurchaseLink", "")
-            
             full_description = showing.get("ShortDescription", "").strip() or show_description
             if buy_link:
                 full_description += f"\n\n🎟️ Tickets: {buy_link}"
             if info_link:
                 full_description += f"\nℹ️ Info: {info_link}"
 
-            # Build calendar event
             event = Event()
             event.name = f"🎬 {show_title}"
             event.begin = start_dt
