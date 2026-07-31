@@ -9,11 +9,9 @@ jobs:
   scrape-and-publish:
     runs-on: ubuntu-latest
     steps:
-      # Upgraded to @v5 to run natively on Node 24
       - name: Checkout Repository
         uses: actions/checkout@v5
 
-      # Upgraded to @v6 for Node 24 support
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
@@ -29,8 +27,8 @@ jobs:
 
       - name: Update Secret Gist
         env:
-          # Use GITHUB_TOKEN directly (no PAT creation required)
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Use your PAT secret instead of GITHUB_TOKEN
+          GH_TOKEN: ${{ secrets.GIST_PAT }}
           GIST_ID: ${{ secrets.GIST_ID }}
         run: |
           gh gist edit "$GIST_ID" bytowne.ics --add bytowne.ics
