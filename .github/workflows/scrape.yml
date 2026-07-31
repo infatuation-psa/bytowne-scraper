@@ -1,0 +1,22 @@
+name: Update Calendar
+on:
+  schedule:
+    - cron: '0 4 * * *'  # Runs daily at 4:00 AM UTC
+  workflow_dispatch:      # Allows manual trigger
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - run: pip install requests beautifulsoup4 ics python-dateutil
+      - run: python bytowne_scraper.py
+      - name: Update Secret Gist
+        env:
+          GIST_ID: ${{ secrets.GIST_ID }}
+          GH_TOKEN: ${{ secrets.GIST_PAT }}
+        run: |
+          gh gist edit $GIST_ID bytowne.ics --add bytowne.ics
