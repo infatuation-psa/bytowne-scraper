@@ -2,7 +2,6 @@ import requests
 from ics import Calendar, Event
 from datetime import datetime, timedelta
 
-# ByTowne's exact Agile Tix JSON Feed URL
 FEED_URL = "https://tickets.bytowne.ca/websales/feed.ashx?guid=3e656b43-cd16-45ba-86a1-d2392fd70869&format=json&showslist=true&"
 
 def fetch_and_build_ics():
@@ -16,82 +15,84 @@ def fetch_and_build_ics():
 
     data = response.json()
 
-    # Dig into Agile Ticketing's exact nested JSON structure:
-    # Root -> "ArrayOfEvent" -> "Event" -> [ List of Event objects ]
-    raw_events = []
+    # Dig into Agile Ticketing's actual structure:
+    # Root -> "ArrayOfShows" -> [ Show Objects ] -> "CurrentShowings" -> [ Showing Objects ]
+    shows = data.get("ArrayOfShows", [])
     
-    if isinstance(data, dict):
-        array_of_event = data.get("ArrayOfEvent", {})
-        if isinstance(array_of_event, dict):
-            raw_events = array_of_event.get("Event", [])
-        elif isinstance(array_of_event, list):
-            raw_events = array_of_event
-
-    # If Agile returns a single event object instead of a list
-    if isinstance(raw_events, dict):
-        raw_events = [raw_events]
-
-    print(f"Extracted {len(raw_events)} raw events from feed.")
-
     cal = Calendar()
+    event_count = 0
 
-    for item in raw_events:
-        if not isinstance(item, dict):
+    for show in shows:
+        if not isinstance(show, dict):
             continue
 
-        title = item.get("Name", "ByTowne Movie")
-        description = item.get("ShortDescription", "").strip()
-        start_str = item.get("StartDate")
-        
-        # Skip if start time is missing or TBD
-        if not start_str or item.get("DateTBD"):
-            continue
+        # Parent show metadata
+        show_title = show.get("Name", "ByTowne Movie")
+        show_description = show.get("ShortDescription", "").strip()
+        info_link = show.get("InfoLink", "")
 
-        try:
-            start_dt = datetime.fromisoformat(start_str.rstrip("Z"))
-        except ValueError:
-            continue
+        # Extract individual showings
+        showings = show.get("CurrentShowings", [])
 
-        # End date handling
-        end_str = item.get("EndDate")
-        if end_str:
+        for showing in showings:
+            if not isinstance(showing, dict):
+                continue
+
+            start_str = showing.get("StartDate")
+            
+            # Skip missing start times or TBD dates
+            if not start_str or showing.get("DateTBD"):
+                continue
+
             try:
-                end_dt = datetime.fromisoformat(end_str.rstrip("Z"))
+                start_dt = datetime.fromisoformat(start_str.rstrip("Z"))
             except ValueError:
+                continue
+
+            # Handle EndDate or default to duration / 2 hours
+            end_str = showing.get("EndDate")
+            duration_mins = showing.get("Duration")
+
+            if end_str:
+                try:
+                    end_dt = datetime.fromisoformat(end_str.rstrip("Z"))
+                except ValueError:
+                    end_dt = start_dt + timedelta(hours=2)
+            elif duration_mins and duration_mins.isdigit():
+                end_dt = start_dt + timedelta(minutes=int(duration_mins))
+            else:
                 end_dt = start_dt + timedelta(hours=2)
-        else:
-            end_dt = start_dt + timedelta(hours=2)
 
-        # Build location
-        venue = item.get("Venue", {})
-        venue_name = venue.get("Name", "ByTowne Cinema")
-        address = venue.get("Address1", "325 Rideau Street")
-        city = venue.get("City", "Ottawa")
-        state = venue.get("State", "ON")
-        zip_code = venue.get("Zip", "K1N 5Y4")
-        full_location = f"{venue_name}, {address}, {city}, {state} {zip_code}"
+            # Build location from showing's nested Venue object
+            venue = showing.get("Venue", {})
+            venue_name = venue.get("Name", "ByTowne Cinema")
+            address = venue.get("Address1", "325 Rideau Street")
+            city = venue.get("City", "Ottawa")
+            state = venue.get("State", "ON")
+            zip_code = venue.get("Zip", "K1N 5Y4")
+            full_location = f"{venue_name}, {address}, {city}, {state} {zip_code}"
 
-        # Build links
-        buy_link = item.get("BuyLink", "")
-        info_link = item.get("InfoLink", "")
-        
-        full_description = description
-        if buy_link:
-            full_description += f"\n\n🎟️ Tickets: {buy_link}"
-        if info_link:
-            full_description += f"\nℹ️ Info: {info_link}"
+            # Links (Purchase link is inside LegacyPurchaseLink on the showing)
+            buy_link = showing.get("LegacyPurchaseLink", "")
+            
+            full_description = showing.get("ShortDescription", "").strip() or show_description
+            if buy_link:
+                full_description += f"\n\n🎟️ Tickets: {buy_link}"
+            if info_link:
+                full_description += f"\nℹ️ Info: {info_link}"
 
-        # Create iCal event
-        event = Event()
-        event.name = f"🎬 {title}"
-        event.begin = start_dt
-        event.end = end_dt
-        event.description = full_description
-        event.location = full_location
+            # Build calendar event
+            event = Event()
+            event.name = f"🎬 {show_title}"
+            event.begin = start_dt
+            event.end = end_dt
+            event.description = full_description
+            event.location = full_location
 
-        cal.events.add(event)
+            cal.events.add(event)
+            event_count += 1
 
-    print(f"Successfully generated ICS calendar with {len(cal.events)} events.")
+    print(f"Successfully generated ICS calendar with {event_count} total showtimes.")
 
     with open("bytowne.ics", "w", encoding="utf-8") as f:
         f.writelines(cal.serialize_iter())
