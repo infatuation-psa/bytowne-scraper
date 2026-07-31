@@ -1,83 +1,87 @@
+from datetime import datetime, timedelta
 import requests
 from ics import Calendar, Event
-from datetime import datetime, timedelta
 
 FEED_URL = "https://tickets.bytowne.ca/websales/feed.ashx?guid=3e656b43-cd16-45ba-86a1-d2392fd70869&format=json&showslist=true"
 
-def parse_bytowne():
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    }
-    
-    print(f"Fetching JSON feed from {FEED_URL}...")
-    response = requests.get(FEED_URL, headers=headers)
-    
-    if response.status_code != 200:
-        print(f"Failed to fetch feed: HTTP {response.status_code}")
-        return
 
-    data = response.json()
-    cal = Calendar()
-    
-    # The list of showtimes is stored directly under 'ArrayOfEvent'
-    events_list = data.get("ArrayOfEvent", [])
-    event_count = 0
+def fetch_and_build_ics():
+  # Standard browser header to bypass default python-requests blocking
+  headers = {
+      "User-Agent": (
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+          " (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      )
+  }
 
-    for item in events_list:
-        title = item.get("Name", "Untitled Film")
-        
-        # Skip if date is TBD or start date is missing
-        if item.get("DateTBD") or not item.get("StartDate"):
-            continue
+  print(f"Fetching data from: {FEED_URL}")
+  response = requests.get(FEED_URL, headers=headers, timeout=15)
+  response.raise_for_status()
 
-        # Parse start and end times
-        start_dt = datetime.fromisoformat(item.get("StartDate"))
-        
-        if item.get("EndDate"):
-            end_dt = datetime.fromisoformat(item.get("EndDate"))
-        else:
-            # Fallback to 2-hour duration if EndDate missing
-            end_dt = start_dt + timedelta(hours=2)
+  data = response.json()
 
-        # Extract Venue details
-        venue_info = item.get("Venue", {})
-        venue_name = venue_info.get("Name", "ByTowne Cinema")
-        address = venue_info.get("Address1", "325 Rideau Street")
-        city = venue_info.get("City", "Ottawa")
-        state = venue_info.get("State", "ON")
-        zip_code = venue_info.get("Zip", "K1N 5Y4")
-        
-        full_location = f"{venue_name}, {address}, {city}, {state} {zip_code}"
+  # Handle Agile Ticketing JSON structure variants
+  raw_events = []
+  if isinstance(data, list):
+    raw_events = data
+  elif isinstance(data, dict):
+    aoe = data.get("ArrayOfEvent", data)
+    if isinstance(aoe, dict):
+      raw_events = aoe.get("Event", [])
+    elif isinstance(aoe, list):
+      raw_events = aoe
 
-        # Extract Description & Buy Links
-        description_text = item.get("ShortDescription", "").strip()
-        buy_link = item.get("BuyLink", "")
-        info_link = item.get("InfoLink", "")
-        
-        # Format clean body text with links
-        description_body = description_text
-        if buy_link:
-            description_body += f"\n\n🎟️ Tickets: {buy_link}"
-        if info_link:
-            description_body += f"\nℹ️ Info: {info_link}"
+  # Single item edge case
+  if isinstance(raw_events, dict):
+    raw_events = [raw_events]
 
-        # Create iCal Event
-        event = Event()
-        event.name = f"🎬 {title}"
-        event.begin = start_dt
-        event.end = end_dt
-        event.location = full_location
-        event.description = description_body
-        
-        cal.events.add(event)
-        event_count += 1
-        print(f"Added: {title} on {start_dt.strftime('%Y-%m-%d %I:%M %p')}")
+  print(f"Extracted {len(raw_events)} raw events from feed.")
 
-    print(f"\nTotal events added to calendar: {event_count}")
+  cal = Calendar()
 
-    # Write output to bytowne.ics
-    with open("bytowne.ics", "w", encoding="utf-8") as f:
-        f.writelines(cal.serialize_iter())
+  for item in raw_events:
+    if not isinstance(item, dict):
+      continue
+
+    title = item.get("Name") or item.get("EventName") or "ByTowne Movie"
+    description = item.get("ShortDescription") or item.get("Description") or ""
+    start_str = item.get("StartDate") or item.get("StartDateTime")
+
+    if not start_str:
+      continue
+
+    # Parse ISO timestamp string
+    try:
+      # Clean trailing Z if present for naive datetime parsing
+      clean_start = start_str.rstrip("Z")
+      start_dt = datetime.fromisoformat(clean_start)
+    except ValueError:
+      continue
+
+    # Estimate ~2h duration if no EndDate provided
+    end_str = item.get("EndDate") or item.get("EndDateTime")
+    if end_str:
+      try:
+        end_dt = datetime.fromisoformat(end_str.rstrip("Z"))
+      except ValueError:
+        end_dt = start_dt + timedelta(hours=2)
+    else:
+      end_dt = start_dt + timedelta(hours=2)
+
+    event = Event()
+    event.name = title
+    event.begin = start_dt
+    event.end = end_dt
+    event.description = description
+    event.location = "ByTowne Cinema, 325 Rideau St, Ottawa, ON"
+
+    cal.events.add(event)
+
+  print(f"Successfully generated ICS calendar with {len(cal.events)} events.")
+
+  with open("bytowne.ics", "w", encoding="utf-8") as f:
+    f.write(cal.serialize())
+
 
 if __name__ == "__main__":
-    parse_bytowne()
+  fetch_and_build_ics()
