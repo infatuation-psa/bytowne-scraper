@@ -1,22 +1,36 @@
-name: Update Calendar
+name: Update ByTowne Calendar
+
 on:
   schedule:
     - cron: '0 4 * * *'  # Runs daily at 4:00 AM UTC
-  workflow_dispatch:      # Allows manual trigger
+  workflow_dispatch:      # Allows manual testing from the Actions tab
 
 jobs:
-  build:
+  scrape-and-publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
+      # Upgraded to @v5 to run natively on Node 24
+      - name: Checkout Repository
+        uses: actions/checkout@v5
+
+      # Upgraded to @v6 for Node 24 support
+      - name: Set up Python
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
-      - run: pip install requests beautifulsoup4 ics python-dateutil
-      - run: python bytowne_scraper.py
+
+      - name: Install Dependencies
+        run: |
+          pip install requests beautifulsoup4 ics python-dateutil
+
+      - name: Run Scraper
+        run: |
+          python bytowne_scraper.py
+
       - name: Update Secret Gist
         env:
+          # Use GITHUB_TOKEN directly (no PAT creation required)
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GIST_ID: ${{ secrets.GIST_ID }}
-          GH_TOKEN: ${{ secrets.GIST_PAT }}
         run: |
-          gh gist edit $GIST_ID bytowne.ics --add bytowne.ics
+          gh gist edit "$GIST_ID" bytowne.ics --add bytowne.ics
